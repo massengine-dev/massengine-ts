@@ -1,0 +1,41 @@
+{
+  "name": "@massengine/client",
+  "version": "1.1.0",
+  "description": "Official zero-dependency TypeScript and JavaScript SDK for MassEngine vector and hybrid search.",
+  "type": "module",
+  "main": "./src/index.mjs",
+  "types": "./src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "import": "./src/index.mjs",
+      "default": "./src/index.mjs"
+    }
+  },
+  "files": [
+    "src/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test test/client.test.mjs"
+  },
+  "keywords": [
+    "massengine",
+    "vector-database",
+    "hybrid-search",
+    "rag",
+    "embeddings",
+    "bm25"
+  ],
+  "author": "MassEngine <dev@massengine.com>",
+  "license": "Apache-2.0",
+  "homepage": "https://massengine.com",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/massengine-dev/massengine-ts.git"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
