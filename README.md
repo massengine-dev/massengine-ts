@@ -5,7 +5,7 @@ Official zero-dependency TypeScript / JavaScript SDK for [MassEngine](https://ma
 ## Installation
 
 ```bash
-npm install github:massengine-dev/massengine-ts#v1.1.0
+npm install github:massengine-dev/massengine-ts#v1.1.2
 ```
 
 ## Quickstart
