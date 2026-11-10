@@ -2,6 +2,8 @@ export interface MassEngineOptions {
   baseUrl?: string;
   apiKey?: string;
   fetch?: typeof globalThis.fetch;
+  timeoutMs?: number;
+  maxResponseBytes?: number;
 }
 
 export interface Doc<M = Record<string, unknown>> {
@@ -39,7 +41,7 @@ export interface SearchHit<M = Record<string, unknown>> {
 
 export interface SearchResponse<M = Record<string, unknown>> {
   hits: SearchHit<M>[];
-  stats: Record<string, unknown>;
+  took_ms?: number;
 }
 
 export interface PatchRequest<M = Record<string, unknown>> {
@@ -47,6 +49,12 @@ export interface PatchRequest<M = Record<string, unknown>> {
   category?: number;
   metadata?: M;
   replace_metadata?: boolean;
+}
+
+export interface TenantSummary {
+  tenant: string;
+  doc_count: number;
+  byte_count?: number;
 }
 
 export interface TenantQuota {
@@ -86,8 +94,10 @@ export declare class MassEngineError extends Error {
 
 export declare class MassEngineClient {
   readonly baseUrl: string;
-  readonly apiKey?: string;
+  readonly timeoutMs: number;
+  readonly maxResponseBytes: number;
   constructor(options?: MassEngineOptions);
+  toJSON(): { baseUrl: string };
   ingest(tenant: string, docs: Doc[]): Promise<{ ingested: number; degraded: boolean }>;
   search<M = Record<string, unknown>>(req: SearchRequest): Promise<SearchResponse<M>>;
   batchSearch<M = Record<string, unknown>>(queries: SearchRequest[]): Promise<{ results: SearchResponse<M>[] }>;
@@ -103,8 +113,8 @@ export declare class MassEngineClient {
   getTenantQuota(tenant: string): Promise<TenantQuota>;
   getTenantUsage(tenant: string): Promise<TenantUsage>;
   listUsage(): Promise<UsageReport>;
-  listTenants(): Promise<Array<{ tenant: string; tag: number; mode: string; pinned_shard: number; doc_count: number }>>;
-  getTenant(tenant: string): Promise<{ tenant: string; tag: number; mode: string; pinned_shard: number; doc_count: number }>;
+  listTenants(): Promise<TenantSummary[]>;
+  getTenant(tenant: string): Promise<TenantSummary>;
   deleteTenant(tenant: string): Promise<number>;
   flush(): Promise<{ flushed: boolean }>;
   compact(): Promise<{ compacted: boolean }>;
