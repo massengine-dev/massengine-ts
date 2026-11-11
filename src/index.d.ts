@@ -8,6 +8,7 @@ export interface MassEngineOptions {
 
 export interface Doc<M = Record<string, unknown>> {
   id: string;
+  database?: string;
   vector: number[];
   date?: number;
   category?: number;
@@ -15,10 +16,9 @@ export interface Doc<M = Record<string, unknown>> {
 }
 
 export interface SearchRequest {
-  tenant: string;
-  vector?: number[];
-  query_text?: string;
-  hybrid_alpha?: number;
+  tenant?: string;
+  database?: string;
+  vector: number[];
   metadata_filter?: Record<string, unknown>;
   k: number;
   offset?: number;
@@ -45,14 +45,45 @@ export interface SearchResponse<M = Record<string, unknown>> {
 }
 
 export interface PatchRequest<M = Record<string, unknown>> {
+  database?: string;
   date?: number;
   category?: number;
   metadata?: M;
   replace_metadata?: boolean;
 }
 
+export interface DatabaseConfig {
+  database: string;
+  num_shards?: number;
+  rf?: number;
+  mode?: string;
+  data_type?: string;
+}
+
+export interface DatabaseInfo {
+  tenant: string;
+  database?: string;
+  partition?: string;
+  tag?: number;
+  mode?: string;
+  pinned_shard?: number;
+  num_shards?: number;
+  rf?: number;
+  data_type?: string;
+  explicit_shards?: boolean;
+  doc_count: number;
+  byte_count?: number;
+}
+
 export interface TenantSummary {
   tenant: string;
+  database?: string;
+  partition?: string;
+  mode?: string;
+  pinned_shard?: number;
+  num_shards?: number;
+  rf?: number;
+  data_type?: string;
   doc_count: number;
   byte_count?: number;
 }
@@ -60,32 +91,54 @@ export interface TenantSummary {
 export interface TenantQuota {
   plan?: string;
   max_docs?: number;
+  max_bytes?: number;
   max_qps?: number;
   burst?: number;
   suspended?: boolean;
+}
+
+export interface LatencyBucket {
+  le_ms: string;
+  count: number;
+}
+
+export interface LatencyStats {
+  count: number;
+  avg_ms: number;
+  p50_ms: number;
+  p95_ms: number;
+  p99_ms: number;
+  buckets?: LatencyBucket[];
 }
 
 export interface TenantUsage {
   tenant: string;
   plan?: string;
   suspended?: boolean;
+  partition_count: number;
   live_docs: number;
+  live_bytes: number;
   max_docs?: number;
+  max_bytes?: number;
   max_qps?: number;
   read_requests: number;
   read_units: number;
   write_requests: number;
   write_units: number;
   rate_limited: number;
+  search_latency: LatencyStats;
   updated_at?: string;
 }
 
 export interface UsageReport {
   tenants: TenantUsage[];
   total_live_docs: number;
+  total_live_bytes: number;
   total_read_units: number;
   total_write_units: number;
 }
+
+export type DatabaseScopeOption = string | { database?: string };
 
 export declare class MassEngineError extends Error {
   statusCode: number;
@@ -98,15 +151,52 @@ export declare class MassEngineClient {
   readonly maxResponseBytes: number;
   constructor(options?: MassEngineOptions);
   toJSON(): { baseUrl: string };
-  ingest(tenant: string, docs: Doc[]): Promise<{ ingested: number; degraded: boolean }>;
+  ingest(
+    tenant: string,
+    docs: Doc[],
+    database?: DatabaseScopeOption
+  ): Promise<{ ingested: number; degraded: boolean; database?: string }>;
   search<M = Record<string, unknown>>(req: SearchRequest): Promise<SearchResponse<M>>;
-  batchSearch<M = Record<string, unknown>>(queries: SearchRequest[]): Promise<{ results: SearchResponse<M>[] }>;
-  getDoc<M = Record<string, unknown>>(tenant: string, id: string): Promise<{ id: string; tenant: string; metadata?: M }>;
-  patchDoc<M = Record<string, unknown>>(tenant: string, id: string, patch: PatchRequest<M>): Promise<{ id: string; tenant: string; date?: number; category?: number; metadata?: M }>;
-  batchGetDocs<M = Record<string, unknown>>(tenant: string, ids: string[]): Promise<Array<{ id: string; tenant: string; metadata?: M }>>;
-  deleteDoc(tenant: string, id: string): Promise<{ deleted: boolean; id: string }>;
-  importTenant(tenant: string, docs: Doc[]): Promise<number>;
-  exportTenant<M = Record<string, unknown>>(tenant: string): Promise<Doc<M>[]>;
+  batchSearch<M = Record<string, unknown>>(
+    queries: SearchRequest[],
+    options?: string | { tenant?: string; database?: string }
+  ): Promise<{ results: SearchResponse<M>[] }>;
+  getDoc<M = Record<string, unknown>>(
+    tenant: string,
+    id: string,
+    database?: DatabaseScopeOption
+  ): Promise<{ id: string; tenant: string; database?: string; date?: number; category?: number; metadata?: M }>;
+  patchDoc<M = Record<string, unknown>>(
+    tenant: string,
+    id: string,
+    patch: PatchRequest<M>,
+    database?: DatabaseScopeOption
+  ): Promise<{
+    id: string;
+    tenant?: string;
+    database?: string;
+    date?: number;
+    category?: number;
+    degraded?: boolean;
+    metadata?: M;
+  }>;
+  batchGetDocs<M = Record<string, unknown>>(
+    tenant: string,
+    ids: string[],
+    database?: DatabaseScopeOption
+  ): Promise<Array<{ id: string; tenant: string; database?: string; date?: number; category?: number; metadata?: M }>>;
+  deleteDoc(
+    tenant: string,
+    id: string,
+    database?: DatabaseScopeOption
+  ): Promise<{ deleted: boolean; id: string; database?: string }>;
+  importTenant(tenant: string, docs: Doc[], database?: DatabaseScopeOption): Promise<number>;
+  exportTenant<M = Record<string, unknown>>(tenant?: string, database?: DatabaseScopeOption): Promise<Doc<M>[]>;
+  listDatabases(tenant?: string): Promise<DatabaseInfo[]>;
+  createDatabase(tenant: string, config: DatabaseConfig): Promise<DatabaseInfo>;
+  createDatabase(config: DatabaseConfig): Promise<DatabaseInfo>;
+  getDatabase(tenant: string, database: string): Promise<DatabaseInfo>;
+  deleteDatabase(tenant: string, database: string): Promise<number>;
   createTenantKey(tenant: string, key?: string): Promise<string>;
   revokeTenantKey(tenant: string, key: string): Promise<{ revoked: boolean }>;
   setTenantQuota(tenant: string, quota: TenantQuota): Promise<TenantQuota>;
@@ -114,10 +204,10 @@ export declare class MassEngineClient {
   getTenantUsage(tenant: string): Promise<TenantUsage>;
   listUsage(): Promise<UsageReport>;
   listTenants(): Promise<TenantSummary[]>;
-  getTenant(tenant: string): Promise<TenantSummary>;
+  getTenant(tenant: string, database?: DatabaseScopeOption): Promise<TenantSummary>;
   deleteTenant(tenant: string): Promise<number>;
   flush(): Promise<{ flushed: boolean }>;
   compact(): Promise<{ compacted: boolean }>;
   ready(): Promise<{ ready: boolean; unavailable_shards?: number[] }>;
-  health(): Promise<{ status: string }>;
+  health(): Promise<{ status: string; ok?: boolean }>;
 }
