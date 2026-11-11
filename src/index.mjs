@@ -1,4 +1,4 @@
-const SDK_VERSION = "1.1.2";
+const SDK_VERSION = "1.1.3";
 const USER_AGENT = `massengine-ts/${SDK_VERSION}`;
 const DEFAULT_BASE_URL = "http://localhost:8081";
 const DEFAULT_TIMEOUT_MS = 30_000;

@@ -90,7 +90,7 @@ test("MassEngineClient self-contained lifecycle and User-Agent", async () => {
 
     const h = await admin.health();
     assert.equal(h.status, "ok");
-    assert.equal(seenUserAgent, "massengine-ts/1.1.2");
+    assert.equal(seenUserAgent, "massengine-ts/1.1.3");
 
     const quota = await admin.setTenantQuota("acme", {
       plan: "pro",

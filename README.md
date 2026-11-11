@@ -5,7 +5,7 @@ Official zero-dependency TypeScript / JavaScript SDK for [MassEngine](https://ma
 ## Installation
 
 ```bash
-npm install github:massengine-dev/massengine-ts#v1.1.2
+npm install @massengine/client
 ```
 
 ## Quickstart
@@ -13,9 +13,10 @@ npm install github:massengine-dev/massengine-ts#v1.1.2
 ```ts
 import { MassEngineClient } from "@massengine/client";
 
+// Connect to a local quickstart cluster (http://localhost:8080) or cloud gateway:
 const client = new MassEngineClient({
-  baseUrl: "https://api.massengine.com",
-  apiKey: "mk_your_tenant_api_key",
+  baseUrl: "http://localhost:8080",
+  apiKey: "mk_your_tenant_or_meadm_admin_key",
 });
 
 // 1. Ingest vectors + structured metadata
