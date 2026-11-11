@@ -1,4 +1,4 @@
-const SDK_VERSION = "1.1.3";
+const SDK_VERSION = "1.1.4";
 const USER_AGENT = `massengine-ts/${SDK_VERSION}`;
 const DEFAULT_BASE_URL = "http://localhost:8081";
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -25,11 +25,98 @@ function escTenant(tenant) {
   return esc(tenant);
 }
 
+function escDatabase(database) {
+  if (typeof database !== "string" || database.includes("/") || database.includes("\\")) {
+    throw new TypeError("Invalid database identifier");
+  }
+  return esc(database);
+}
+
+function escOptionalTenant(tenant, allowUndefined = false) {
+  if (allowUndefined && tenant === undefined) {
+    return "";
+  }
+  if (tenant === "") {
+    return "";
+  }
+  return escTenant(tenant);
+}
+
+function resolveDatabaseOption(optionOrDb) {
+  if (optionOrDb === undefined || optionOrDb === "") {
+    return "";
+  }
+  if (typeof optionOrDb === "string") {
+    escDatabase(optionOrDb);
+    return optionOrDb;
+  }
+  if (optionOrDb !== null && typeof optionOrDb === "object") {
+    const db = optionOrDb.database;
+    if (db === undefined || db === "") {
+      return "";
+    }
+    escDatabase(db);
+    return db;
+  }
+  throw new TypeError("Invalid database option");
+}
+
+function appendDatabaseQuery(basePath, database) {
+  if (!database) {
+    return basePath;
+  }
+  return `${basePath}?database=${escDatabase(database)}`;
+}
+
 function escDocId(id) {
+  if (typeof id !== "string" || id.length === 0) {
+    throw new TypeError("Invalid document identifier");
+  }
   if (id === "batch-get") {
     throw new TypeError("Reserved document identifier");
   }
-  return esc(id);
+  return id.split("/").map(esc).join("/");
+}
+
+function validateDocs(docs) {
+  if (!Array.isArray(docs)) {
+    throw new TypeError("docs must be an array");
+  }
+  for (const doc of docs) {
+    if (!doc || typeof doc !== "object") {
+      throw new TypeError("Each document must be an object");
+    }
+    escDocId(doc.id);
+    if (doc.database !== undefined && doc.database !== "") {
+      escDatabase(doc.database);
+    }
+  }
+}
+
+function validateSearchQuery(req) {
+  if (!req || typeof req !== "object") {
+    throw new TypeError("Search request must be an object");
+  }
+  if (!Array.isArray(req.vector) || req.vector.length === 0) {
+    throw new TypeError("Search vector must be a non-empty array");
+  }
+  if (req.tenant !== undefined && req.tenant !== "") {
+    escTenant(req.tenant);
+  }
+  if (req.database !== undefined && req.database !== "") {
+    escDatabase(req.database);
+  }
+}
+
+function extractErrorMessage(rawText) {
+  let msg = rawText.trim();
+  try {
+    const parsed = JSON.parse(rawText);
+    if (parsed && parsed.error) {
+      msg = String(parsed.error);
+    }
+  } catch {}
+  return msg;
 }
 
 function validateBaseUrl(rawBase) {
@@ -208,17 +295,10 @@ export class MassEngineClient {
 
   async #unwrapError(resp) {
     const raw = await readResponseTextBounded(resp, MAX_ERROR_RESPONSE_BYTES, true);
-    let msg = raw.trim();
-    try {
-      const parsed = JSON.parse(raw);
-      if (parsed && parsed.error) {
-        msg = String(parsed.error);
-      }
-    } catch {}
-    throw new MassEngineError(resp.status, msg);
+    throw new MassEngineError(resp.status, extractErrorMessage(raw));
   }
 
-  async #send(method, path, contentType, body) {
+  async #sendRaw(method, path, contentType, body) {
     const init = {
       method,
       headers: this._headers(contentType),
@@ -228,7 +308,11 @@ export class MassEngineClient {
     if (body !== undefined) {
       init.body = body;
     }
-    const resp = await this.#fetch(`${this.baseUrl}${path}`, init);
+    return this.#fetch(`${this.baseUrl}${path}`, init);
+  }
+
+  async #send(method, path, contentType, body) {
+    const resp = await this.#sendRaw(method, path, contentType, body);
     if (!resp.ok || resp.status < 200 || resp.status >= 300) {
       await this.#unwrapError(resp);
     }
@@ -246,79 +330,182 @@ export class MassEngineClient {
     return text ? JSON.parse(text) : null;
   }
 
-  async ingest(tenant, docs) {
-    return this._requestJson(
-      "POST",
-      `/v1/tenants/${escTenant(tenant)}/ingest`,
-      { docs }
-    );
+  #docPath(tenant, id, database) {
+    const escT = escOptionalTenant(tenant);
+    const escId = escDocId(id);
+    const base = escT === "" ? `/v1/docs/${escId}` : `/v1/tenants/${escT}/docs/${escId}`;
+    return appendDatabaseQuery(base, database);
+  }
+
+  async ingest(tenant, docs, databaseOption) {
+    const escT = escOptionalTenant(tenant);
+    const db = resolveDatabaseOption(databaseOption);
+    validateDocs(docs);
+    const path = escT === "" ? "/v1/ingest" : `/v1/tenants/${escT}/ingest`;
+    const body = db ? { database: db, docs } : { docs };
+    return this._requestJson("POST", path, body);
   }
 
   async search(req) {
+    validateSearchQuery(req);
     return this._requestJson("POST", "/v1/search", req);
   }
 
-  async batchSearch(queries) {
-    return this._requestJson("POST", "/v1/search/batch", { queries });
+  async batchSearch(queries, options) {
+    if (!Array.isArray(queries) || queries.length === 0) {
+      throw new TypeError("Batch search queries must be a non-empty array");
+    }
+    for (const q of queries) {
+      validateSearchQuery(q);
+    }
+    let tenant = "";
+    let database = "";
+    if (typeof options === "string") {
+      database = resolveDatabaseOption(options);
+    } else if (options !== undefined && options !== null) {
+      if (typeof options !== "object") {
+        throw new TypeError("Invalid batchSearch options");
+      }
+      if (options.tenant !== undefined && options.tenant !== "") {
+        escTenant(options.tenant);
+        tenant = options.tenant;
+      }
+      database = resolveDatabaseOption(options);
+    }
+    const body = { queries };
+    if (tenant) {
+      body.tenant = tenant;
+    }
+    if (database) {
+      body.database = database;
+    }
+    return this._requestJson("POST", "/v1/search/batch", body);
   }
 
-  async getDoc(tenant, id) {
-    return this._requestJson(
-      "GET",
-      `/v1/tenants/${escTenant(tenant)}/docs/${escDocId(id)}`
-    );
+  async getDoc(tenant, id, databaseOption) {
+    const db = resolveDatabaseOption(databaseOption);
+    return this._requestJson("GET", this.#docPath(tenant, id, db));
   }
 
-  async patchDoc(tenant, id, patch) {
-    return this._requestJson(
-      "PATCH",
-      `/v1/tenants/${escTenant(tenant)}/docs/${escDocId(id)}`,
-      patch
-    );
+  async patchDoc(tenant, id, patch, databaseOption) {
+    if (!patch || typeof patch !== "object") {
+      throw new TypeError("patch must be an object");
+    }
+    const optDb = resolveDatabaseOption(databaseOption);
+    const bodyDb = patch.database !== undefined && patch.database !== "" ? patch.database : optDb;
+    if (bodyDb) {
+      escDatabase(bodyDb);
+    }
+    const payload = bodyDb ? { ...patch, database: bodyDb } : patch;
+    return this._requestJson("PATCH", this.#docPath(tenant, id, ""), payload);
   }
 
-  async batchGetDocs(tenant, ids) {
-    const res = await this._requestJson(
-      "POST",
-      `/v1/tenants/${escTenant(tenant)}/docs/batch-get`,
-      { ids }
-    );
+  async batchGetDocs(tenant, ids, databaseOption) {
+    const escT = escOptionalTenant(tenant);
+    const db = resolveDatabaseOption(databaseOption);
+    if (!Array.isArray(ids)) {
+      throw new TypeError("ids must be an array");
+    }
+    for (const id of ids) {
+      escDocId(id);
+    }
+    const path = escT === "" ? "/v1/docs/batch-get" : `/v1/tenants/${escT}/docs/batch-get`;
+    const body = db ? { ids, database: db } : { ids };
+    const res = await this._requestJson("POST", path, body);
     return res?.docs || [];
   }
 
-  async deleteDoc(tenant, id) {
-    return this._requestJson(
-      "DELETE",
-      `/v1/tenants/${escTenant(tenant)}/docs/${escDocId(id)}`
-    );
+  async deleteDoc(tenant, id, databaseOption) {
+    const db = resolveDatabaseOption(databaseOption);
+    return this._requestJson("DELETE", this.#docPath(tenant, id, db));
   }
 
-  async importTenant(tenant, docs) {
+  async importTenant(tenant, docs, databaseOption) {
+    const escT = escOptionalTenant(tenant);
+    const db = resolveDatabaseOption(databaseOption);
+    validateDocs(docs);
+    const basePath = escT === "" ? "/v1/import" : `/v1/tenants/${escT}/import`;
+    const path = appendDatabaseQuery(basePath, db);
     const payload = docs.map((d) => JSON.stringify(d)).join("\n") + "\n";
-    const resp = await this.#send(
-      "POST",
-      `/v1/tenants/${escTenant(tenant)}/import`,
-      "application/x-ndjson",
-      payload
-    );
+    const resp = await this.#send("POST", path, "application/x-ndjson", payload);
     const text = await readResponseTextBounded(resp, this.maxResponseBytes, false);
     const out = text ? JSON.parse(text) : {};
     return Number(out.imported || 0);
   }
 
-  async exportTenant(tenant) {
-    const resp = await this.#send(
-      "GET",
-      `/v1/tenants/${escTenant(tenant)}/export`,
-      null,
-      undefined
-    );
+  async exportTenant(tenant = "", databaseOption) {
+    const escT = escOptionalTenant(tenant, true);
+    const db = resolveDatabaseOption(databaseOption);
+    const basePath = escT === "" ? "/v1/export" : `/v1/tenants/${escT}/export`;
+    const path = appendDatabaseQuery(basePath, db);
+    const resp = await this.#send("GET", path, null, undefined);
     const text = await readResponseTextBounded(resp, this.maxResponseBytes, false);
     return text
       .split("\n")
       .map((l) => l.trim())
       .filter(Boolean)
       .map((l) => JSON.parse(l));
+  }
+
+  async listDatabases(tenant = "") {
+    const escT = escOptionalTenant(tenant, true);
+    const path = escT === "" ? "/v1/databases" : `/v1/tenants/${escT}/databases`;
+    const res = await this._requestJson("GET", path);
+    return res?.databases || res?.partitions || [];
+  }
+
+  async createDatabase(tenant, config) {
+    let targetTenant = tenant;
+    let dbConfig = config;
+    if (config === undefined && tenant !== null && typeof tenant === "object") {
+      targetTenant = "";
+      dbConfig = tenant;
+    }
+    const escT = escOptionalTenant(targetTenant, true);
+    if (!dbConfig || typeof dbConfig !== "object") {
+      throw new TypeError("Database config must be an object");
+    }
+    escDatabase(dbConfig.database);
+    const path = escT === "" ? "/v1/databases" : `/v1/tenants/${escT}/databases`;
+    const res = await this._requestJson("POST", path, dbConfig);
+    if (res && typeof res.database === "object" && res.database !== null) {
+      return {
+        ...res.database,
+        database: res.database.database || res.partition || dbConfig.database,
+      };
+    }
+    return res;
+  }
+
+  async getDatabase(tenant, database) {
+    const escT = escOptionalTenant(tenant, true);
+    const escDb = escDatabase(database);
+    const path = escT === "" ? `/v1/databases/${escDb}` : `/v1/tenants/${escT}/databases/${escDb}`;
+    try {
+      const res = await this._requestJson("GET", path);
+      if (res && typeof res.database === "object" && res.database !== null) {
+        return { ...res.database, database: res.database.database || database };
+      }
+      return res && typeof res === "object" ? { ...res, database: res.database || database } : res;
+    } catch (err) {
+      if (!(err instanceof MassEngineError) || err.statusCode !== 405) {
+        throw err;
+      }
+      const dbs = await this.listDatabases(tenant);
+      const match = dbs.find((d) => d.database === database || d.partition === database);
+      if (!match) {
+        throw new MassEngineError(404, "database not found");
+      }
+      return match;
+    }
+  }
+
+  async deleteDatabase(tenant, database) {
+    const escT = escOptionalTenant(tenant, true);
+    const escDb = escDatabase(database);
+    const path = escT === "" ? `/v1/databases/${escDb}` : `/v1/tenants/${escT}/databases/${escDb}`;
+    const res = await this._requestJson("DELETE", path);
+    return Number(res?.docs_deleted || 0);
   }
 
   async createTenantKey(tenant, key = "") {
@@ -371,8 +558,10 @@ export class MassEngineClient {
     return res?.tenants || [];
   }
 
-  async getTenant(tenant) {
-    return this._requestJson("GET", `/v1/tenants/${escTenant(tenant)}`);
+  async getTenant(tenant, databaseOption) {
+    const db = resolveDatabaseOption(databaseOption);
+    const path = appendDatabaseQuery(`/v1/tenants/${escTenant(tenant)}`, db);
+    return this._requestJson("GET", path);
   }
 
   async deleteTenant(tenant) {
@@ -392,7 +581,21 @@ export class MassEngineClient {
   }
 
   async ready() {
-    return this._requestJson("GET", "/v1/ready");
+    const resp = await this.#sendRaw("GET", "/v1/ready", null, undefined);
+    if ((resp.status >= 200 && resp.status < 300) || resp.status === 503) {
+      const text = await readResponseTextBounded(resp, this.maxResponseBytes, false);
+      let parsed = null;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        throw new MassEngineError(resp.status, extractErrorMessage(text));
+      }
+      if (!parsed || typeof parsed !== "object" || typeof parsed.ready !== "boolean") {
+        throw new MassEngineError(resp.status, extractErrorMessage(text));
+      }
+      return parsed;
+    }
+    await this.#unwrapError(resp);
   }
 
   async health() {
