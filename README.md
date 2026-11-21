@@ -1,6 +1,6 @@
 # MassEngine TypeScript & Node.js SDK (`@massengine/client`)
 
-Official zero-dependency TypeScript / JavaScript SDK for [MassEngine](https://massengine.com) — the sub-5ms filtered vector search database. Works natively in Node.js 18+, Bun, Deno, Cloudflare Workers, and Vercel Edge.
+Official zero-dependency TypeScript / JavaScript SDK for [MassEngine](https://massengine.com) — the sub-5ms filtered vector and hybrid search database. Works natively in Node.js 18+, Bun, Deno, Cloudflare Workers, and Vercel Edge.
 
 ## Installation
 
@@ -42,12 +42,21 @@ const { hits } = await client.search({
   },
 });
 
-// 3. In-place metadata patching without re-embedding
+// 3. Hybrid search (dense + BM25 lexical + sparse vectors with weighted RRF)
+const hybrid = await client.search({
+  tenant: "acme-prod",
+  vector: [0.12, -0.44, 0.88, 0.05],
+  query_text: "soc2 security policy",
+  hybrid_alpha: 0.6,
+  k: 10,
+});
+
+// 4. In-place metadata patching without re-embedding
 await client.patchDoc("acme-prod", "docs/2026/policy-1", {
   metadata: { clearance: 4, reviewed: true },
 });
 
-// 4. Inspect tenant quota & billable usage
+// 5. Inspect tenant quota & billable usage
 const usage = await client.getTenantUsage("acme-prod");
 console.log(usage);
 ```

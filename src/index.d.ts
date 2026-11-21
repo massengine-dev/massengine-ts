@@ -10,6 +10,8 @@ export interface Doc<M = Record<string, unknown>> {
   id: string;
   database?: string;
   vector: number[];
+  sparse_indices?: number[];
+  sparse_values?: number[];
   date?: number;
   category?: number;
   metadata?: M;
@@ -18,17 +20,24 @@ export interface Doc<M = Record<string, unknown>> {
 export interface SearchRequest {
   tenant?: string;
   database?: string;
-  vector: number[];
+  vector?: number[];
+  query_text?: string;
+  hybrid_alpha?: number;
+  sparse_indices?: number[];
+  sparse_values?: number[];
   metadata_filter?: Record<string, unknown>;
   k: number;
   offset?: number;
   min_score?: number;
   rerank_pool?: number;
   nprobe?: number;
+  skip_meta?: boolean;
   min_date?: number;
   max_date?: number;
   category?: number;
   categories?: number[];
+  min_doc_id?: number;
+  max_doc_id?: number;
 }
 
 export interface SearchHit<M = Record<string, unknown>> {
@@ -165,7 +174,16 @@ export declare class MassEngineClient {
     tenant: string,
     id: string,
     database?: DatabaseScopeOption
-  ): Promise<{ id: string; tenant: string; database?: string; date?: number; category?: number; metadata?: M }>;
+  ): Promise<{
+    id: string;
+    tenant: string;
+    database?: string;
+    sparse_indices?: number[];
+    sparse_values?: number[];
+    date?: number;
+    category?: number;
+    metadata?: M;
+  }>;
   patchDoc<M = Record<string, unknown>>(
     tenant: string,
     id: string,
@@ -175,6 +193,8 @@ export declare class MassEngineClient {
     id: string;
     tenant?: string;
     database?: string;
+    sparse_indices?: number[];
+    sparse_values?: number[];
     date?: number;
     category?: number;
     degraded?: boolean;
@@ -184,7 +204,18 @@ export declare class MassEngineClient {
     tenant: string,
     ids: string[],
     database?: DatabaseScopeOption
-  ): Promise<Array<{ id: string; tenant: string; database?: string; date?: number; category?: number; metadata?: M }>>;
+  ): Promise<
+    Array<{
+      id: string;
+      tenant: string;
+      database?: string;
+      sparse_indices?: number[];
+      sparse_values?: number[];
+      date?: number;
+      category?: number;
+      metadata?: M;
+    }>
+  >;
   deleteDoc(
     tenant: string,
     id: string,
