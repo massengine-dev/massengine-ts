@@ -1,9 +1,10 @@
-const SDK_VERSION = "1.1.4";
+const SDK_VERSION = "1.2.0";
 const USER_AGENT = `massengine-ts/${SDK_VERSION}`;
 const DEFAULT_BASE_URL = "http://localhost:8081";
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_RESPONSE_BYTES = 64 * 1024 * 1024;
 const MAX_ERROR_RESPONSE_BYTES = 64 * 1024;
+const MAX_SPARSE_TERMS = 65536;
 
 function esc(segment) {
   if (
@@ -78,6 +79,36 @@ function escDocId(id) {
   return id.split("/").map(esc).join("/");
 }
 
+function validateFiniteNumbers(arr, label) {
+  if (!Array.isArray(arr)) {
+    throw new TypeError(`${label} must be an array of finite numbers`);
+  }
+  for (const v of arr) {
+    if (typeof v !== "number" || !Number.isFinite(v)) {
+      throw new TypeError(`${label} must contain only finite numbers`);
+    }
+  }
+}
+
+function validateSparsePair(indices, values) {
+  if (indices === undefined && values === undefined) {
+    return false;
+  }
+  if (!Array.isArray(indices) || !Array.isArray(values) || indices.length !== values.length) {
+    throw new TypeError("sparse_indices and sparse_values must both be arrays of equal length");
+  }
+  if (indices.length > MAX_SPARSE_TERMS) {
+    throw new TypeError(`sparse vector exceeds maximum of ${MAX_SPARSE_TERMS} terms`);
+  }
+  for (const idx of indices) {
+    if (typeof idx !== "number" || !Number.isInteger(idx) || idx < 0 || idx > 0xffffffff) {
+      throw new TypeError("sparse_indices must contain uint32 integers");
+    }
+  }
+  validateFiniteNumbers(values, "sparse_values");
+  return indices.length > 0;
+}
+
 function validateDocs(docs) {
   if (!Array.isArray(docs)) {
     throw new TypeError("docs must be an array");
@@ -87,6 +118,10 @@ function validateDocs(docs) {
       throw new TypeError("Each document must be an object");
     }
     escDocId(doc.id);
+    if (doc.vector !== undefined) {
+      validateFiniteNumbers(doc.vector, "Document vector");
+    }
+    validateSparsePair(doc.sparse_indices, doc.sparse_values);
     if (doc.database !== undefined && doc.database !== "") {
       escDatabase(doc.database);
     }
@@ -97,8 +132,31 @@ function validateSearchQuery(req) {
   if (!req || typeof req !== "object") {
     throw new TypeError("Search request must be an object");
   }
-  if (!Array.isArray(req.vector) || req.vector.length === 0) {
-    throw new TypeError("Search vector must be a non-empty array");
+  let hasDense = false;
+  if (req.vector !== undefined) {
+    validateFiniteNumbers(req.vector, "Search vector");
+    hasDense = req.vector.length > 0;
+  }
+  let hasLexical = false;
+  if (req.query_text !== undefined) {
+    if (typeof req.query_text !== "string") {
+      throw new TypeError("query_text must be a string");
+    }
+    hasLexical = req.query_text.trim().length > 0;
+  }
+  const hasSparse = validateSparsePair(req.sparse_indices, req.sparse_values);
+  if (!hasDense && !hasLexical && !hasSparse) {
+    throw new TypeError("Search request requires a non-empty vector, query_text, or sparse_indices");
+  }
+  if (req.hybrid_alpha !== undefined) {
+    if (
+      typeof req.hybrid_alpha !== "number" ||
+      !Number.isFinite(req.hybrid_alpha) ||
+      req.hybrid_alpha < 0 ||
+      req.hybrid_alpha > 1
+    ) {
+      throw new TypeError("hybrid_alpha must be a finite number between 0 and 1");
+    }
   }
   if (req.tenant !== undefined && req.tenant !== "") {
     escTenant(req.tenant);

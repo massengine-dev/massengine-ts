@@ -15,7 +15,7 @@ test("MassEngineClient self-contained lifecycle and User-Agent", async () => {
   const pkg = JSON.parse(
     fs.readFileSync(path.join(__dirname, "../package.json"), "utf8")
   );
-  assert.equal(pkg.version, "1.1.4");
+  assert.equal(pkg.version, "1.2.0");
 
   const server = http.createServer(async (req, res) => {
     seenUserAgent = req.headers["user-agent"] || "";
@@ -117,7 +117,7 @@ test("MassEngineClient self-contained lifecycle and User-Agent", async () => {
 
     const h = await admin.health();
     assert.equal(h.status, "ok");
-    assert.equal(seenUserAgent, "massengine-ts/1.1.4");
+    assert.equal(seenUserAgent, "massengine-ts/1.2.0");
 
     const quota = await admin.setTenantQuota("acme", {
       plan: "pro",
@@ -184,10 +184,13 @@ test("MassEngineClient self-contained lifecycle and User-Agent", async () => {
   }
 });
 
-test("Empty search vector rejected client-side and index.d.ts updated", async () => {
+test("Hybrid, BM25 lexical, and sparse vector search + client-side validation", async () => {
   const dts = fs.readFileSync(path.join(__dirname, "../src/index.d.ts"), "utf8");
-  assert.ok(!dts.includes("query_text"), "query_text must be removed from index.d.ts");
-  assert.ok(!dts.includes("hybrid_alpha"), "hybrid_alpha must be removed from index.d.ts");
+  assert.ok(dts.includes("query_text?: string"), "query_text?: string must exist in index.d.ts");
+  assert.ok(dts.includes("hybrid_alpha?: number"), "hybrid_alpha?: number must exist in index.d.ts");
+  assert.ok(dts.includes("sparse_indices?: number[]"), "sparse_indices?: number[] must exist in index.d.ts");
+  assert.ok(dts.includes("sparse_values?: number[]"), "sparse_values?: number[] must exist in index.d.ts");
+  assert.ok(dts.includes("vector?: number[]"), "vector?: number[] must be optional in SearchRequest");
   assert.ok(dts.includes("max_bytes?: number"), "max_bytes must exist in index.d.ts");
   assert.ok(dts.includes("degraded?: boolean"), "degraded?: boolean must exist on patchDoc");
   assert.ok(dts.includes("partition_count"), "partition_count must exist in TenantUsage");
@@ -199,9 +202,26 @@ test("Empty search vector rejected client-side and index.d.ts updated", async ()
   assert.ok(dts.includes("getDatabase"), "getDatabase must exist in index.d.ts");
   assert.ok(dts.includes("deleteDatabase"), "deleteDatabase must exist in index.d.ts");
 
-  let contacted = false;
-  const server = http.createServer((_req, res) => {
-    contacted = true;
+  const searchBodies = [];
+  const ingestBodies = [];
+  const server = http.createServer(async (req, res) => {
+    const chunks = [];
+    for await (const c of req) chunks.push(c);
+    const raw = Buffer.concat(chunks).toString("utf8");
+    res.writeHead(200, { "Content-Type": "application/json" });
+    if (req.url.endsWith("/ingest")) {
+      ingestBodies.push(JSON.parse(raw));
+      return res.end(JSON.stringify({ ingested: 1, degraded: false }));
+    }
+    if (req.url === "/v1/search") {
+      searchBodies.push(JSON.parse(raw));
+      return res.end(JSON.stringify({ hits: [{ id: "ts-h1", doc_id: 1, score: 0.032, shard: 0 }] }));
+    }
+    if (req.url === "/v1/search/batch") {
+      const parsed = JSON.parse(raw);
+      searchBodies.push(...parsed.queries);
+      return res.end(JSON.stringify({ results: parsed.queries.map(() => ({ hits: [{ id: "ts-h1", doc_id: 1, score: 1.1, shard: 0 }] })) }));
+    }
     res.end("{}");
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -209,14 +229,65 @@ test("Empty search vector rejected client-side and index.d.ts updated", async ()
 
   try {
     const client = new MassEngineClient({ baseUrl: `http://127.0.0.1:${port}` });
+
+    await client.ingest("acme", [
+      {
+        id: "ts-h1",
+        vector: [1, 0],
+        sparse_indices: [10, 42],
+        sparse_values: [1.5, 0.75],
+        metadata: { title: "distributed consensus" },
+      },
+    ]);
+    assert.deepEqual(ingestBodies[0].docs[0].sparse_indices, [10, 42]);
+
+    await client.search({ tenant: "acme", query_text: "distributed consensus", k: 5 });
+    assert.equal(searchBodies[0].vector, undefined);
+    assert.equal(searchBodies[0].query_text, "distributed consensus");
+
+    await client.search({ tenant: "acme", sparse_indices: [10, 42], sparse_values: [1.0, 0.5], k: 5 });
+    assert.equal(searchBodies[1].vector, undefined);
+    assert.deepEqual(searchBodies[1].sparse_indices, [10, 42]);
+
+    await client.search({
+      tenant: "acme",
+      vector: [1, 0],
+      query_text: "consensus",
+      hybrid_alpha: 0.65,
+      sparse_indices: [10],
+      sparse_values: [0.8],
+      skip_meta: true,
+      k: 10,
+    });
+    assert.equal(searchBodies[2].hybrid_alpha, 0.65);
+    assert.equal(searchBodies[2].skip_meta, true);
+
+    const bs = await client.batchSearch([
+      { tenant: "acme", query_text: "consensus", k: 3 },
+      { tenant: "acme", sparse_indices: [42], sparse_values: [1.2], k: 3 },
+    ]);
+    assert.equal(bs.results.length, 2);
+
+    const beforeCount = searchBodies.length;
     await assert.rejects(() => client.search({ tenant: "acme", k: 5 }), TypeError);
     await assert.rejects(() => client.search({ tenant: "acme", vector: [], k: 5 }), TypeError);
+    await assert.rejects(() => client.search({ tenant: "acme", query_text: "   ", k: 5 }), TypeError);
+    await assert.rejects(() => client.search({ tenant: "acme", vector: [1, 0], hybrid_alpha: -0.1, k: 5 }), TypeError);
+    await assert.rejects(() => client.search({ tenant: "acme", vector: [1, 0], hybrid_alpha: 1.5, k: 5 }), TypeError);
+    await assert.rejects(() => client.search({ tenant: "acme", vector: [1, 0], hybrid_alpha: Number.NaN, k: 5 }), TypeError);
+    await assert.rejects(() => client.search({ tenant: "acme", sparse_indices: [1, 2], sparse_values: [0.5], k: 5 }), TypeError);
+    await assert.rejects(() => client.search({ tenant: "acme", sparse_indices: [-1], sparse_values: [0.5], k: 5 }), TypeError);
+    await assert.rejects(() => client.search({ tenant: "acme", sparse_indices: [1], sparse_values: [Number.POSITIVE_INFINITY], k: 5 }), TypeError);
+    await assert.rejects(
+      () => client.ingest("acme", [{ id: "bad", vector: [1, 0], sparse_indices: [1], sparse_values: [0.5, 0.6] }]),
+      TypeError
+    );
     await assert.rejects(() => client.batchSearch([]), TypeError);
     await assert.rejects(
       () => client.batchSearch([{ tenant: "acme", vector: [1, 0], k: 5 }, { tenant: "acme", vector: [], k: 5 }]),
       TypeError
     );
-    assert.equal(contacted, false);
+    assert.equal(searchBodies.length, beforeCount);
   } finally {
     server.close();
   }
