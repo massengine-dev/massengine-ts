@@ -160,9 +160,9 @@ export declare class MassEngineClient {
   readonly maxResponseBytes: number;
   constructor(options?: MassEngineOptions);
   toJSON(): { baseUrl: string };
-  ingest(
+  ingest<M = Record<string, unknown>>(
     tenant: string,
-    docs: Doc[],
+    docs: Doc<M>[],
     database?: DatabaseScopeOption
   ): Promise<{ ingested: number; degraded: boolean; database?: string }>;
   search<M = Record<string, unknown>>(req: SearchRequest): Promise<SearchResponse<M>>;
@@ -221,7 +221,11 @@ export declare class MassEngineClient {
     id: string,
     database?: DatabaseScopeOption
   ): Promise<{ deleted: boolean; id: string; database?: string }>;
-  importTenant(tenant: string, docs: Doc[], database?: DatabaseScopeOption): Promise<number>;
+  importTenant<M = Record<string, unknown>>(
+    tenant: string,
+    docs: Doc<M>[],
+    database?: DatabaseScopeOption
+  ): Promise<number>;
   exportTenant<M = Record<string, unknown>>(tenant?: string, database?: DatabaseScopeOption): Promise<Doc<M>[]>;
   listDatabases(tenant?: string): Promise<DatabaseInfo[]>;
   createDatabase(tenant: string, config: DatabaseConfig): Promise<DatabaseInfo>;

@@ -491,12 +491,20 @@ test("Multi-database CRUD and database-scoped data-plane operations", async () =
       assert.equal(dbs[0].database, "analytics");
 
       getDb405 = false;
+      const beforeDirect = seenRequests.length;
       const gotDb = await client.getDatabase(tenant, "analytics");
       assert.equal(gotDb.database, "analytics");
+      assert.equal(seenRequests.length - beforeDirect, 1);
 
       getDb405 = true;
+      const beforeFb = seenRequests.length;
       const gotFb = await client.getDatabase(tenant, "analytics");
       assert.equal(gotFb.database, "analytics");
+      assert.equal(seenRequests.length - beforeFb, 2);
+      await assert.rejects(
+        () => client.getDatabase(tenant, "nonexistent"),
+        (err) => err instanceof MassEngineError && err.statusCode === 404
+      );
 
       const deleted = await client.deleteDatabase(tenant, "analytics");
       assert.equal(deleted, 4);
@@ -679,6 +687,111 @@ test("Timeout and maxResponseBytes limits are enforced", async () => {
 
     const fastClient = new MassEngineClient({ baseUrl, timeoutMs: 30 });
     await assert.rejects(() => fastClient.flush());
+  } finally {
+    server.close();
+  }
+});
+
+test("min_score NaN/Infinity/non-number rejected client-side without null coercion", async () => {
+  const seenBodies = [];
+  const server = http.createServer(async (req, res) => {
+    const chunks = [];
+    for await (const c of req) chunks.push(c);
+    seenBodies.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+    res.writeHead(200, { "Content-Type": "application/json" });
+    if (req.url === "/v1/search/batch") {
+      res.end(JSON.stringify({ results: [{ hits: [] }] }));
+      return;
+    }
+    res.end(JSON.stringify({ hits: [] }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+
+  try {
+    const client = new MassEngineClient({ baseUrl: `http://127.0.0.1:${port}`, apiKey: "mk_test" });
+
+    // Valid finite min_score (including 0 and negative) succeeds
+    await client.search({ tenant: "acme", vector: [1, 0], k: 5, min_score: 0 });
+    assert.equal(seenBodies[0].min_score, 0);
+    await client.batchSearch([{ tenant: "acme", vector: [1, 0], k: 5, min_score: -0.25 }]);
+    assert.equal(seenBodies[1].queries[0].min_score, -0.25);
+
+    const beforeCount = seenBodies.length;
+    for (const badMinScore of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, "0.5", true, null]) {
+      await assert.rejects(
+        () => client.search({ tenant: "acme", vector: [1, 0], k: 5, min_score: badMinScore }),
+        TypeError
+      );
+      await assert.rejects(
+        () => client.batchSearch([{ tenant: "acme", vector: [1, 0], k: 5, min_score: badMinScore }]),
+        TypeError
+      );
+    }
+    assert.equal(seenBodies.length, beforeCount);
+  } finally {
+    server.close();
+  }
+});
+
+test("Admin & tenant management endpoints and createDatabase 1-arg overload", async () => {
+  const seen = [];
+  const server = http.createServer(async (req, res) => {
+    seen.push(`${req.method} ${req.url}`);
+    const chunks = [];
+    for await (const c of req) chunks.push(c);
+    res.writeHead(200, { "Content-Type": "application/json" });
+    if (req.method === "GET" && req.url === "/v1/tenants") {
+      return res.end(JSON.stringify({ tenants: [{ tenant: "acme", doc_count: 3 }] }));
+    }
+    if (req.method === "DELETE" && req.url === "/v1/tenants/acme") {
+      return res.end(JSON.stringify({ docs_deleted: 3 }));
+    }
+    if (req.method === "GET" && req.url === "/v1/tenants/acme/quota") {
+      return res.end(JSON.stringify({ quota: { plan: "pro", max_docs: 100 } }));
+    }
+    if (req.method === "DELETE" && req.url === "/v1/tenants/acme/keys") {
+      return res.end(JSON.stringify({ revoked: true }));
+    }
+    if (req.method === "POST" && req.url === "/v1/databases") {
+      const b = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      return res.end(JSON.stringify({ ok: true, database: { tenant: "acme", database: b.database, doc_count: 0 } }));
+    }
+    if (req.method === "POST" && req.url === "/v1/search/batch") {
+      return res.end(JSON.stringify({ results: [{ hits: [] }] }));
+    }
+    if (req.method === "POST" && req.url === "/v1/flush") {
+      return res.end(JSON.stringify({ flushed: true }));
+    }
+    if (req.method === "POST" && req.url === "/v1/compact") {
+      return res.end(JSON.stringify({ compacted: true }));
+    }
+    res.end("{}");
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+
+  try {
+    const admin = new MassEngineClient({ baseUrl: `http://127.0.0.1:${port}`, apiKey: "meadm_test" });
+    const dbOneArg = await admin.createDatabase({ database: "analytics" });
+    assert.equal(dbOneArg.database, "analytics");
+
+    await admin.batchSearch([{ vector: [1, 0], k: 2 }], { tenant: "acme", database: "analytics" });
+    assert.ok(seen.includes("POST /v1/search/batch"));
+
+    const tenants = await admin.listTenants();
+    assert.equal(tenants.length, 1);
+    assert.equal(tenants[0].tenant, "acme");
+
+    const quota = await admin.getTenantQuota("acme");
+    assert.equal(quota.plan, "pro");
+
+    const rev = await admin.revokeTenantKey("acme", "mk_old");
+    assert.equal(rev.revoked, true);
+
+    assert.equal((await admin.flush()).flushed, true);
+    assert.equal((await admin.compact()).compacted, true);
+    assert.equal(await admin.deleteTenant("acme"), 3);
   } finally {
     server.close();
   }

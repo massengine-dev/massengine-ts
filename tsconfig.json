@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": false,
+    "paths": {
+      "@massengine/client": ["./src/index.d.ts"]
+    }
+  },
+  "include": ["src/index.d.ts", "test/types-check.ts"]
+}

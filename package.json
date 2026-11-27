@@ -18,7 +18,8 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "node --test test/client.test.mjs"
+    "test": "node --test test/client.test.mjs",
+    "typecheck": "npx --yes -p typescript@5.7.3 tsc -p tsconfig.json"
   },
   "keywords": [
     "massengine",
