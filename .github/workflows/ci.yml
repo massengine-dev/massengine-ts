@@ -23,6 +23,8 @@ jobs:
           node-version: "22"
       - name: Run SDK test suite
         run: npm test
+      - name: Type-check TypeScript declarations
+        run: npm run typecheck
 
   publish:
     name: publish-npm

@@ -158,6 +158,11 @@ function validateSearchQuery(req) {
       throw new TypeError("hybrid_alpha must be a finite number between 0 and 1");
     }
   }
+  if (req.min_score !== undefined) {
+    if (typeof req.min_score !== "number" || !Number.isFinite(req.min_score)) {
+      throw new TypeError("min_score must be a finite number");
+    }
+  }
   if (req.tenant !== undefined && req.tenant !== "") {
     escTenant(req.tenant);
   }
